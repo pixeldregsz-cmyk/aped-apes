@@ -87,7 +87,7 @@ describe("ApEdApes", function () {
     await apes.setMintOpen(true);
     let minted = 0;
     while (minted < 444) {
-      const qty = Math.min(60, 444 - minted);
+      const qty = Math.min(25, 444 - minted);
       await apes.connect(buyer).mint(qty, { value: BigInt(qty) });
       minted += qty;
     }
@@ -134,33 +134,58 @@ describe("ApEdApes", function () {
     expect(amount).to.equal(1000); // 1000 bps = 10% of 10,000 (test placeholder rate)
   });
 
-  it("registers an ERC-8004 agent for a minted token and records the agentId", async function () {
+  it("registers the agent inside the mint — before the buyer owns the token", async function () {
     await apes.setMintOpen(true);
     await apes.connect(buyer).mint(1, { value: PRICE });
-    await expect(apes.connect(buyer).registerAgent(1, "ipfs://agent/1")).to.be.reverted; // owner only
-    await apes.registerAgent(1, "ipfs://agent/1");
+    // the identity exists the moment the mint lands: no separate step
     expect(await apes.agentIdOf(1)).to.equal(1);
+    expect(await mockAdapter.registerCalls()).to.equal(1);
+    // ORDER PROOF: the mock Adapter enforces the real Adapter's
+    // caller-authority rule and records the owner it observed at call
+    // time — at registration the token had NO owner (Prem's order:
+    // register, then assign to the buyer)
+    expect(await mockAdapter.sawNoOwnerForToken(1)).to.equal(true);
+    expect(await mockAdapter.ownerSeenForToken(1)).to.equal(ethers.ZeroAddress);
+    expect(await mockAdapter.lastHadOwnerAtCall()).to.equal(false);
+    // ...and only afterwards did the buyer come to own the token
+    expect(await apes.ownerOf(1)).to.equal(buyer.address);
     // a second registration for the same token reverts cleanly: the
     // recorded agentId stands and the Adapter is not called again
-    await expect(apes.registerAgent(1, "ipfs://agent/1")).to.be.revertedWith(
+    await expect(apes.registerAgent(1, "ipfs://aped-meta/1")).to.be.revertedWith(
       "ApEd: agent already registered"
     );
     expect(await apes.agentIdOf(1)).to.equal(1);
     expect(await mockAdapter.registerCalls()).to.equal(1);
   });
 
-  it("registerAgent binds the token through the Adapter under the ERC-721 standard", async function () {
+  it("registers a multi-mint in token order, every one pre-assignment", async function () {
+    await apes.setMintOpen(true);
+    await apes.connect(buyer).mint(3, { value: PRICE * 3n });
+    expect(await mockAdapter.registerCalls()).to.equal(3);
+    expect(await mockAdapter.registerOrderLength()).to.equal(3);
+    expect(await mockAdapter.registerOrder(0)).to.equal(1);
+    expect(await mockAdapter.registerOrder(1)).to.equal(2);
+    expect(await mockAdapter.registerOrder(2)).to.equal(3);
+    for (const id of [1, 2, 3]) {
+      expect(await mockAdapter.sawNoOwnerForToken(id)).to.equal(true);
+      expect(await apes.agentIdOf(id)).to.equal(id);
+      expect(await apes.ownerOf(id)).to.equal(buyer.address);
+    }
+  });
+
+  it("mint binds the token through the Adapter under the ERC-721 standard, agent URI = the token's metadata route", async function () {
     await apes.setMintOpen(true);
     await apes.connect(buyer).mint(1, { value: PRICE });
-    await apes.registerAgent(1, "ipfs://agent/1");
     // the Adapter was called once, with the binding the design calls
     // for: standard 0 (ERC721 — control follows ownerOf), this
-    // contract as the bound address, the token ID, and the agent URI
+    // contract as the bound address, the token ID, and the agent URI —
+    // which at mint is the token's own metadata route (its tokenURI)
     expect(await mockAdapter.registerCalls()).to.equal(1);
     expect(await mockAdapter.lastStandard()).to.equal(0);
     expect(await mockAdapter.lastBoundAddress()).to.equal(await apes.getAddress());
     expect(await mockAdapter.lastTokenId()).to.equal(1);
-    expect(await mockAdapter.lastAgentURI()).to.equal("ipfs://agent/1");
+    expect(await mockAdapter.lastAgentURI()).to.equal("ipfs://aped-meta/1");
+    expect(await mockAdapter.lastAgentURI()).to.equal(await apes.tokenURI(1));
     // and the stored binding for the issued agentId matches
     const binding = await mockAdapter.bindingOf(await apes.agentIdOf(1));
     expect(binding.standard).to.equal(0);
@@ -171,7 +196,6 @@ describe("ApEdApes", function () {
   it("the Adapter custodies the ERC-8004 identity — not the ape's wallet, not the contract", async function () {
     await apes.setMintOpen(true);
     await apes.connect(buyer).mint(1, { value: PRICE });
-    await apes.registerAgent(1, "ipfs://agent/1");
     const agentId = await apes.agentIdOf(1);
     const tba = await apes.tokenAccount(1);
     // the identity NFT is owned by the Adapter, which custodies it
@@ -183,7 +207,30 @@ describe("ApEdApes", function () {
     expect(await mock8004.balanceOf(await apes.getAddress())).to.equal(0);
   });
 
-  it("registerAgent reverts until the Adapter is set, and only the owner can set it", async function () {
+  it("registers on every mint path — whitelist, reserve, and SeaDrop included", async function () {
+    // Whitelist-phase direct mint
+    await apes.addToWhitelist([buyer.address]);
+    await apes.setMintPhase(1); // Whitelist
+    await apes.connect(buyer).mint(1, { value: PRICE });
+    expect(await apes.agentIdOf(1)).to.equal(1);
+    expect(await mockAdapter.sawNoOwnerForToken(1)).to.equal(true);
+    // reserve mint (owner-only path, any phase)
+    await apes.reserveMint(200);
+    expect(await apes.agentIdOf(200)).to.not.equal(0);
+    expect(await mockAdapter.sawNoOwnerForToken(200)).to.equal(true);
+    expect(await apes.ownerOf(200)).to.equal(PIXEL_WALLET);
+    // SeaDrop mint
+    await apes.updateAllowedSeaDrop([other.address], true);
+    await apes
+      .connect(other)
+      .mintSeaDrop(buyer.address, owner.address, [buyer.address], [1], { value: PRICE });
+    expect(await apes.ownerOf(2)).to.equal(buyer.address);
+    expect(await apes.agentIdOf(2)).to.not.equal(0);
+    expect(await mockAdapter.sawNoOwnerForToken(2)).to.equal(true);
+    expect(await mockAdapter.registerCalls()).to.equal(3);
+  });
+
+  it("mints exactly as before with no Adapter configured — and the registerAgent fallback covers it later", async function () {
     // a second deployment with no Adapter configured
     const ApEd = await ethers.getContractFactory("ApEdApes");
     const bare = await ApEd.deploy(
@@ -194,19 +241,40 @@ describe("ApEdApes", function () {
       ethers.ZeroAddress
     );
     await bare.waitForDeployment();
+    const bareAddr = await bare.getAddress();
     await bare.setMintOpen(true);
+    // the mint succeeds exactly as a plain mint: token, account, URI —
+    // and no registration (deploy configuration order must not brick it)
     await bare.connect(buyer).mint(1, { value: PRICE });
-    await expect(bare.registerAgent(1, "ipfs://agent/1")).to.be.revertedWith(
+    expect(await bare.ownerOf(1)).to.equal(buyer.address);
+    expect(await ethers.provider.getCode(await bare.tokenAccount(1))).to.not.equal("0x");
+    expect(await bare.tokenURI(1)).to.equal("ipfs://aped-meta/1");
+    expect(await bare.agentIdOf(1)).to.equal(0);
+    // the fallback refuses to run while no Adapter is set
+    await expect(bare.registerAgent(1, "ipfs://aped-meta/1")).to.be.revertedWith(
       "ApEd: agent adapter not set"
     );
-    // only the owner can set the Adapter
+    // only the owner can set the Adapter, and registerAgent is owner-only
     await expect(bare.connect(buyer).setAgentAdapter(await mockAdapter.getAddress())).to.be
       .reverted;
     await bare.setAgentAdapter(await mockAdapter.getAddress());
     expect(await bare.agentAdapter()).to.equal(await mockAdapter.getAddress());
-    // with it set, registration runs through the Adapter as usual
-    await bare.registerAgent(1, "ipfs://agent/1");
+    await expect(bare.connect(buyer).registerAgent(1, "ipfs://aped-meta/1")).to.be.reverted;
+    // FALLBACK AUTHORITY: post-mint, the Adapter authorizes only the
+    // token's owner or their delegate — the contract's call is rejected
+    // until the owner grants it the adapter8004.manage delegation
+    // (the mock's setManageDelegated stands in for delegate.xyz)
+    await expect(bare.registerAgent(1, "ipfs://aped-meta/1")).to.be.revertedWith(
+      "MockAdapter: caller not authorized"
+    );
+    expect(await bare.agentIdOf(1)).to.equal(0);
+    await mockAdapter.setManageDelegated(bareAddr, bareAddr, true);
+    await bare.registerAgent(1, "ipfs://aped-meta/1");
     expect(await bare.agentIdOf(1)).to.equal(1);
+    // the fallback registration observed the token WITH its owner —
+    // the exact opposite of the mint-time order, which is the point
+    expect(await mockAdapter.sawNoOwnerForToken(1)).to.equal(false);
+    expect(await mockAdapter.ownerSeenForToken(1)).to.equal(buyer.address);
   });
 
   it("withdraw sends all mint proceeds to pixel's wallet", async function () {
@@ -275,7 +343,7 @@ describe("ApEdApes", function () {
     );
     let minted = 0;
     while (minted < 429) {
-      const qty = Math.min(60, 429 - minted);
+      const qty = Math.min(25, 429 - minted);
       await apes.connect(buyer).mint(qty, { value: BigInt(qty) });
       minted += qty;
     }
@@ -474,7 +542,7 @@ describe("ApEdApes", function () {
     ).to.be.revertedWith("ApEd: supply cap reached");
     let minted = 0;
     while (minted < 444) {
-      const qty = Math.min(60, 444 - minted);
+      const qty = Math.min(25, 444 - minted);
       await apes
         .connect(other)
         .mintSeaDrop(buyer.address, owner.address, [buyer.address], [qty], { value: BigInt(qty) });
@@ -519,15 +587,14 @@ describe("ApEdApes", function () {
     // ERC-165 advertises ERC-4906 alongside the other surfaces
     expect(await apes.supportsInterface("0x49064906")).to.equal(true);
     await apes.setMintOpen(true);
-    await apes.connect(buyer).mint(1, { value: PRICE });
+    // the signal rides the same internal write path as every write:
+    // the mint itself emits it (registration + address records)
+    await expect(apes.connect(buyer).mint(1, { value: PRICE }))
+      .to.emit(apes, "MetadataUpdate")
+      .withArgs(1);
     // a post-mint setMetadata write signals the refresh, so OpenSea
     // re-reads the token instead of serving its cached copy
     await expect(apes.setMetadata(1, "context", ethers.toUtf8Bytes("# ApEd #1")))
-      .to.emit(apes, "MetadataUpdate")
-      .withArgs(1);
-    // the signal rides the same internal write path as every write:
-    // registration emits it too
-    await expect(apes.registerAgent(1, "ipfs://agent/1"))
       .to.emit(apes, "MetadataUpdate")
       .withArgs(1);
   });
@@ -600,15 +667,15 @@ describe("ApEdApes", function () {
     );
   });
 
-  it("721T: registerAgent writes the agent-registration key naming the registry and agentId", async function () {
-    await apes.setMintOpen(true);
-    await apes.connect(buyer).mint(1, { value: PRICE });
+  it("721T: the mint writes the agent-registration key naming the registry and agentId", async function () {
     const registry = await mock8004.getAddress();
     const chainId = (await ethers.provider.getNetwork()).chainId;
     const key = `agent-registration[${erc7930Address(chainId, registry)}][1]`;
-    // nothing recorded before registration
+    // nothing recorded before the mint
     expect(await apes.metadata(1, key)).to.equal("0x");
-    await apes.registerAgent(1, "ipfs://agent/1");
+    await apes.setMintOpen(true);
+    await apes.connect(buyer).mint(1, { value: PRICE });
+    // registration rode inside the mint: the key is already written
     expect(await apes.agentIdOf(1)).to.equal(1);
     // ENSIP-25 semantics: the value is the attestation marker "1"; the
     // key itself names the registry (ERC-7930) and the issued agentId

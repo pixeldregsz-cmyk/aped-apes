@@ -80,6 +80,12 @@ contract Mock8004Registry is ERC721 {
     }
 }
 
+/// @notice Minimal ownerOf view the mock adapter uses to read the
+///         bound token's current owner under its authority rule.
+interface IBoundToken {
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
 /// @notice Test double for Adapter8004 (Unruggable's ERC-8004 adapter).
 ///         Mirrors the real adapter's registration semantics this
 ///         contract relies on: register(standard, boundAddress, tokenId,
@@ -87,9 +93,19 @@ contract Mock8004Registry is ERC721 {
 ///         the ADAPTER as its owner (custody), stores the binding, and
 ///         returns the registry's agentId. The call arguments are
 ///         recorded so tests can assert the collection contract binds
-///         the right token under the right standard. (The real adapter
-///         additionally gates the caller under its binding rules; the
-///         mock records instead of gating.)
+///         the right token under the right standard.
+///         The mock also enforces the real adapter's caller-authority
+///         rule, modeled faithfully: the caller is authorized when
+///         (a) the bound token has no owner yet and the caller is the
+///         token contract itself (the ownerless-registration path,
+///         built for binding inside the mint transaction), or (b) the
+///         caller is the token's current owner, or (c) the token's
+///         owner has delegated the caller — the real adapter checks
+///         delegate.xyz for the adapter8004.manage grant; here a test
+///         records that grant with setManageDelegated. The owner the
+///         mock observes at call time is recorded per token
+///         (ownerSeenForToken / sawNoOwnerForToken), so a test can
+///         prove registration ran BEFORE the token was assigned.
 contract MockAdapter8004 {
     struct Binding {
         uint8 standard;
@@ -104,10 +120,42 @@ contract MockAdapter8004 {
     address public lastBoundAddress;
     uint256 public lastTokenId;
     string public lastAgentURI;
+    /// @notice The bound token's owner as observed at the last
+    ///         register() call (address(0) when it had no owner).
+    address public lastOwnerAtCall;
+    bool public lastHadOwnerAtCall;
     mapping(uint256 agentId => Binding) public bindings;
+    /// @notice Per-token record of the authority check: the owner seen
+    ///         when that token was registered, and whether it had none.
+    mapping(uint256 tokenId => address) public ownerSeenForToken;
+    mapping(uint256 tokenId => bool) public sawNoOwnerForToken;
+    /// @notice Token IDs in the order register() was called.
+    uint256[] public registerOrder;
+    /// @notice Stand-in for the delegate.xyz adapter8004.manage grant:
+    ///         manageDelegated[boundContract][caller], set by tests.
+    mapping(address boundContract => mapping(address caller => bool)) public manageDelegated;
 
     constructor(address registry_) {
         registry = Mock8004Registry(registry_);
+    }
+
+    /// @notice Test helper standing in for the token owner granting
+    ///         `caller` the adapter8004.manage delegation (delegate.xyz
+    ///         on the real deployment).
+    function setManageDelegated(address boundContract, address caller, bool allowed) external {
+        manageDelegated[boundContract][caller] = allowed;
+    }
+
+    function registerOrderLength() external view returns (uint256) {
+        return registerOrder.length;
+    }
+
+    function _boundOwner(address boundAddress, uint256 tokenId) internal view returns (address) {
+        try IBoundToken(boundAddress).ownerOf(tokenId) returns (address o) {
+            return o;
+        } catch {
+            return address(0); // token does not exist yet: no owner
+        }
     }
 
     function register(
@@ -116,11 +164,22 @@ contract MockAdapter8004 {
         uint256 tokenId,
         string calldata agentURI
     ) external returns (uint256 agentId) {
+        // The real adapter's caller-authority rule (see contract note).
+        address currentOwner = _boundOwner(boundAddress, tokenId);
+        bool authorized = (currentOwner == address(0) && msg.sender == boundAddress) ||
+            msg.sender == currentOwner ||
+            manageDelegated[boundAddress][msg.sender];
+        require(authorized, "MockAdapter: caller not authorized");
         registerCalls++;
         lastStandard = standard;
         lastBoundAddress = boundAddress;
         lastTokenId = tokenId;
         lastAgentURI = agentURI;
+        lastOwnerAtCall = currentOwner;
+        lastHadOwnerAtCall = currentOwner != address(0);
+        ownerSeenForToken[tokenId] = currentOwner;
+        sawNoOwnerForToken[tokenId] = currentOwner == address(0);
+        registerOrder.push(tokenId);
         // The real adapter has the registry mint the identity NFT to
         // the adapter itself; the mock registry safe-mints to its
         // caller, which here is this adapter — the same custody.

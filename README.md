@@ -24,51 +24,78 @@ chain. Deployment happens only on pixel's explicit word.**
   SwampAgentsV2). `tokenAccount(id)` returns the deterministic wallet
   address for any token, and `ensureTokenAccount(id)` is a permissionless,
   idempotent helper that deploys the account if it is ever missing.
-- **ERC-8004 agent registration — through Adapter8004.** `registerAgent(tokenId, agentURI)`
-  (owner-only) registers the token through Unruggable's Adapter8004
-  front-end: the Adapter binds the token under its ERC-721 standard
-  (standard 0 — control follows `ownerOf`) and has the Identity Registry
-  mint the identity NFT to the Adapter itself, which custodies it.
-  Control of the identity record is re-derived from the token's current
-  owner on every call, so the identity can never be transferred out of
-  the ape's wallet or stripped ahead of a sale — it is never in the
-  wallet at all; it stays bound to the token and passes to whoever holds
-  the token. The contract records the returned agentId against the token
-  (`agentIdOf`) and writes the token's ERC-721T agent-registration
-  record (see the next bullet). The ERC-6551 wallet leg is unchanged —
-  the wallet still holds the ape's trading funds; what travels with the
-  token is the wallet address, the identity, and the record, and the
-  funds in the wallet remain the current owner's working capital.
-  Adopted 2026-11-17 on pixel's ruling ("I say we let them register") —
-  the same adapter-mediated pattern pixel already runs for his Loopers
-  and Swamp Agents — after Prem's critique of holding the identity
-  inside the drainable wallet. Accepted dependency, recorded plainly:
-  the Adapter is a young (v0.0.x), Unruggable-upgradeable UUPS proxy
-  with internal/AI-orchestrated reviews only and no published
-  third-party audit (research:
+- **ERC-8004 agent registration — through Adapter8004, inside the
+  mint.** Registration is part of issuance: every mint path (direct,
+  whitelist, reserve, SeaDrop) funnels through one internal issue
+  step that first calls the Adapter's
+  `register(0, address(this), tokenId, agentURI)`, records the
+  returned agentId against the token (`agentIdOf`), and writes the
+  token's ERC-721T agent-registration record (see the next bullet) —
+  and only then assigns the token to its buyer and creates its
+  ERC-6551 account. The order is **Prem's confirmed design
+  (2026-11-17, reviewing this contract: "register then assign to the
+  buyer")**. The agent URI recorded at mint is the token's own
+  metadata route (`{baseURI}{tokenId}` — the same string `tokenURI`
+  serves; the metadata service serves the agent's profile there and
+  reads the recorded agentId back from this contract). The Adapter
+  binds the token under its ERC-721 standard (standard 0 — control
+  follows `ownerOf`) and has the Identity Registry mint the identity
+  NFT to the Adapter itself, which custodies it. Control of the
+  identity record is re-derived from the token's current owner on
+  every call, so the identity can never be transferred out of the
+  ape's wallet or stripped ahead of a sale — it is never in the
+  wallet at all; it stays bound to the token and passes to whoever
+  holds the token. The ERC-6551 wallet leg is unchanged — the wallet
+  still holds the ape's trading funds; what travels with the token is
+  the wallet address, the identity, and the record, and the funds in
+  the wallet remain the current owner's working capital.
+  Registration at mint runs only when the Adapter and the registry
+  are configured: a mint with no Adapter set skips registration and
+  behaves exactly as a plain mint (deploy configuration order must
+  never brick the mint), and `registerAgent(tokenId, agentURI)`
+  (owner-only) remains as the fallback for such a token — see the
+  caller-authority note for the delegation that fallback then needs.
+  If the Adapter IS configured, its call is integral to the mint: an
+  Adapter failure reverts the mint rather than issuing an
+  unregistered ape. Adopted 2026-11-17 on pixel's ruling ("I say we
+  let them register") — the same adapter-mediated pattern pixel
+  already runs for his Loopers and Swamp Agents — after Prem's
+  critique of holding the identity inside the drainable wallet.
+  Accepted dependency, recorded plainly: the Adapter is a young
+  (v0.0.x), Unruggable-upgradeable UUPS proxy with internal/AI-
+  orchestrated reviews only and no published third-party audit
+  (research:
   `~/workspace/research_notes/adapter-vs-6551-20261117/report.md`).
-  Covered by the tests "registerAgent binds the token through the
-  Adapter under the ERC-721 standard" and "the Adapter custodies the
+  Covered by the tests "registers the agent inside the mint — before
+  the buyer owns the token", "mint binds the token through the
+  Adapter under the ERC-721 standard, agent URI = the token's
+  metadata route", "registers on every mint path — whitelist,
+  reserve, and SeaDrop included", and "the Adapter custodies the
   ERC-8004 identity — not the ape's wallet, not the contract".
-- **Caller authority — read before registering on mainnet.** The
-  Adapter authorizes the caller of its `register()` under its binding
-  rules: the token contract itself only while the token has no owner
-  (its ownerless-registration path, designed for binding inside the
-  mint transaction), otherwise the token's current owner or that
-  owner's delegate.xyz delegate (`adapter8004.manage`). A post-mint
-  `registerAgent` call routed through this contract reaches the Adapter
-  with this contract as the caller, so on the real deployment it
-  succeeds only when one of those holds — for example, the token's
-  owner has granted this contract the delegation. This is an
-  operational requirement of the Adapter's model, not something the
-  contract can code around: the Adapter deliberately gives the
-  original registrant no lasting privilege.
+- **Caller authority — the design now runs on the Adapter's
+  ownerless path.** The Adapter authorizes the caller of its
+  `register()` under its binding rules: the token contract itself
+  only while the token has no owner (its ownerless-registration
+  path, designed for binding inside the mint transaction), otherwise
+  the token's current owner or that owner's delegate.xyz delegate
+  (`adapter8004.manage`). Mint-time registration is built to the
+  first rule by construction — the call runs before assignment, so
+  no delegation is ever needed for a normally minted ape. The rule
+  binds only the `registerAgent` **fallback**: for a token minted
+  before the Adapter was configured, the fallback call reaches the
+  Adapter with this contract as the caller, so it succeeds only when
+  the token's current owner has granted this contract the
+  `adapter8004.manage` delegation via delegate.xyz; without it the
+  Adapter rejects the call. That is the Adapter's model working as
+  intended — it deliberately gives the original registrant no
+  lasting privilege — and it is why registration lives in the mint
+  rather than after it.
 - **ERC-721T onchain agent profile (ERC-8048).** Every token carries a
   key/value metadata store on the contract itself (`metadata(tokenId,
   key)` / `setMetadata`, ERC-165 ID `0xdf670be1`), holding its ERC-721T
   agent profile: at mint, on every mint path, the token's ERC-6551
-  account address is written under the Base address key; at
-  `registerAgent`, the ERC-8004 registration is written under the
+  account address is written under the Base address key, and the
+  ERC-8004 registration (itself part of the mint) is written under the
   agent-registration key. `context` and endpoint keys are set per token
   afterwards. See the ERC-721T section below. Added 2026-11-17 on
   pixel's "Do it or add it. Yes".
@@ -201,7 +228,7 @@ takes an option the standard offers rather than the whole menu.
 | When | Key | Value | Written by |
 |---|---|---|---|
 | Every mint — direct, whitelist, reserve, and SeaDrop paths alike (all funnel through the same account-creation step) | `address[0x0001000002210500]` — the `address[<chain-id>]` key for Base (chain ID 8453; `0x0001000002210500` is its ERC-7930 Chain Identifier, the exact form in EIP-8048's own Base example) | The token's ERC-6551 account on Base: the raw 20 address bytes (the ERC-7930 Address component, not a full interoperable address) | The contract itself, at mint |
-| `registerAgent(tokenId, agentURI)` | `agent-registration[<registry>][<agentId>]` — `<registry>` is the configured ERC-8004 registry as an ERC-7930 interoperable address (e.g. on Base, `0x00010000022105` + `14` + the registry address, hex), `<agentId>` the issued ID in decimal — the exact key format ENSIP-25 defines | `"1"` (UTF-8). Per ENSIP-25 the value has no semantics beyond being non-empty — its presence is the attestation — and `"1"` is the value that standard recommends | The contract itself, inside `registerAgent` |
+| Registration, inside every mint (and the `registerAgent` fallback) | `agent-registration[<registry>][<agentId>]` — `<registry>` is the configured ERC-8004 registry as an ERC-7930 interoperable address (e.g. on Base, `0x00010000022105` + `14` + the registry address, hex), `<agentId>` the issued ID in decimal — the exact key format ENSIP-25 defines | `"1"` (UTF-8). Per ENSIP-25 the value has no semantics beyond being non-empty — its presence is the attestation — and `"1"` is the value that standard recommends | The contract itself, inside the registration step of the mint |
 
 **Keys left unset at mint, on purpose (gas):** `context` and every
 `endpoint[<type>]` key. They are populated per token afterwards through
@@ -242,11 +269,17 @@ metadata docs (updated 2026-11-12): "When you change a stored value,
 emit ERC-4906 MetadataUpdate for the token so OpenSea refreshes it."
 
 **Gas note.** On-chain records are not free: each mint now also pays for
-one fresh storage write (the 20-byte address record) plus its
-`MetadataSet` and `MetadataUpdate` events, and each `registerAgent` pays for one more record.
-That is a small, fixed addition per mint — the price of the profile
-living on the token instead of only on our server — and it is why
-`context` and the endpoint keys are not written at mint.
+two fresh storage writes (the 20-byte address record and, when the
+Adapter is configured, the agent-registration record) plus their
+`MetadataSet` and `MetadataUpdate` events, and — with the Adapter
+configured — the Adapter/registry registration calls themselves (the
+registry mints the identity NFT to the Adapter inside the same
+transaction). That is a fixed addition per mint — the price of the
+profile and the identity living on the token instead of only on our
+server — and it is why `context` and the endpoint keys are not
+written at mint. (In the local suite it is also why the 444-cap tests
+batch their mints at 25 per transaction: the local network's block
+gas limit, not a contract limit.)
 
 ## ⚠️ Deploy parameters — pixel decides every one of these
 
@@ -255,8 +288,8 @@ living on the token instead of only on our server — and it is why
 | **Royalty bps** | The ERC-2981 royalty rate in basis points (e.g. 1000 = 10%). Paid to pixel's wallet `0x4f9883c7331ba59a56360ffa3c332e0bc09029fc` on every secondary sale. | **DECIDED — 1500 bps (15%), set by pixel 2026-11-17.** Pass 1500 as `_royaltyBps` at deploy. The tests use 1000 bps as a placeholder only. |
 | **Mint price (wei)** | The $7 mint price converted to ETH. The contract takes wei, not dollars — no exchange rate is hardcoded anywhere. | Pixel sets the ETH figure at deploy time, from the ETH price that day. Owner can re-price later with `setMintPrice`. |
 | **Base URI** | The metadata service's per-token route. `tokenURI(id)` is `{baseURI}{id}`, and the base URI is set to the deployed metadata service's metadata route — `https://<metadata-service-deployment>/metadata/` — so each token's URI is the service's per-token route for that ID. The JSON served there carries the token's portrait as a per-token `ipfs://<CID>` pointer (the filename→CID mapping is `~/workspace/mutant-fleet/out/image-cids.json`, bound into the service; see the "CID binding" section of the metadata service README). | Set at deploy, once the metadata service is deployed; owner can change it later with `setBaseURI`. |
-| **ERC-8004 registry address** | The ERC-8004 Identity Registry on Base. The Adapter is configured against this registry — its registrations return registry agentIds — and `registerAgent` names it in the token's ERC-721T agent-registration key. | Constructor parameter `_agentRegistry`. Researched candidate: `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` — **re-verify before deploy**. May be deployed as `address(0)` and set later with `setAgentRegistry`. |
-| **Adapter8004 address** | The Adapter proxy `registerAgent` calls to register identities — the custody + binding layer for the identity leg (see the registration bullet above, including its caller-authority requirement). | Constructor parameter `_agentAdapter`; owner can set or change it later with `setAgentAdapter`. Researched Base address: `0x270d25D2c59A8bcA1B0f40ad95fF7806c0025c27` — **re-verify before deploy** against Unruggable's published deployments table, and confirm the implementation version it fronts. |
+| **ERC-8004 registry address** | The ERC-8004 Identity Registry on Base. The Adapter is configured against this registry — its registrations return registry agentIds — and registration names it in the token's ERC-721T agent-registration key. Like the Adapter, it must be set before the mint opens for identities to be filed at mint. | Constructor parameter `_agentRegistry`. Researched candidate: `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` — **re-verify before deploy**. May be deployed as `address(0)` and set later with `setAgentRegistry`. |
+| **Adapter8004 address** | The Adapter proxy the mint-time registration calls to register identities — the custody + binding layer for the identity leg (see the registration bullet above). **It must be set before the mint opens if identities are to be filed at mint** (constructor, or `setAgentAdapter` before opening); tokens minted before it is set carry no registration and fall back to `registerAgent` + the owner's delegate.xyz grant. | Constructor parameter `_agentAdapter`; owner can set or change it later with `setAgentAdapter`. Researched Base address: `0x270d25D2c59A8bcA1B0f40ad95fF7806c0025c27` — **re-verify before deploy** against Unruggable's published deployments table, and confirm the implementation version it fronts. |
 
 Fixed in code (not parameters): supply cap 444, the ERC-6551 registry and
 implementation addresses above, royalty receiver and proceeds payout =
@@ -278,15 +311,20 @@ pixel's wallet `0x4f9883c7331ba59a56360ffa3c332e0bc09029fc`.
    wallet at the chosen rate, `supportsInterface(0xdf670be1)` reads
    true (the ERC-8048 store is live), and `supportsInterface(0x49064906)`
    reads true (ERC-4906 signalling is live).
-6. Register agents (`registerAgent`) for tokens as they are prepared — this
-   can run before or after the mint opens, minding the caller-authority
-   requirement in the registration bullet above (the Adapter authorizes
-   the token's current owner, their delegate.xyz delegate, or the token
-   contract itself only while a token has no owner). Note the gas shape of the sale:
-   every mint transaction now also writes the token's on-chain ERC-721T
-   address record (one storage write + event per token), and each
-   `registerAgent` writes one more record — budget gas accordingly; see
-   the ERC-721T section's gas note.
+6. **Set the Adapter and the registry before any mint opens** (constructor
+   parameters at step 3, or `setAgentAdapter` / `setAgentRegistry`
+   afterwards) — registration rides inside the mint, in Prem's confirmed
+   order (register, then assign to the buyer), so an ape minted before
+   the Adapter is set is an ape with no identity filed. Such a token can
+   still be registered later through the `registerAgent` fallback, but
+   only once its owner has granted this contract the `adapter8004.manage`
+   delegation via delegate.xyz (see the caller-authority note above) —
+   avoid needing it. Note the gas shape of the sale: every mint
+   transaction now also writes the token's on-chain ERC-721T records (the
+   address record, and the agent-registration record when the Adapter is
+   configured) and, with the Adapter configured, runs the registration
+   calls themselves — budget gas accordingly; see the ERC-721T section's
+   gas note.
 7. SeaDrop setup (the sale's front door): verify the real SeaDrop
    contract address for Base from OpenSea's official SeaDrop deployment
    records — do not assume the mainnet address — register it with
@@ -310,19 +348,30 @@ npm install
 npx hardhat test
 ```
 
-39 tests, all passing. They cover: mint closed by default and rejecting
+41 tests, all passing. They cover: mint closed by default and rejecting
 mints; owner-only mint toggle; exact-price charging (underpay and
 wrong-quantity payment revert); owner re-pricing; the 444 cap (444 mint
 fine, 445th reverts); ERC-6551 account creation at mint with the address
 matching the registry's own derivation and code present at the address;
 the permissionless account helper's idempotency; tokenURI from the base
 URI; `royaltyInfo` returning pixel's wallet; ERC-8004 registration
-through the Adapter — recording the agentId, a repeat registration
-reverting without a second Adapter call, the Adapter being called with
-the ERC-721-standard binding for this contract and token, the identity
-NFT custodied by the Adapter (never in the token's wallet, never in
-the collection contract), and registration reverting until the Adapter
-is set (owner-only setter);
+through the Adapter, inside the mint — the agentId recorded by the
+time the mint lands, the mock Adapter (which enforces the real
+Adapter's caller-authority rule) recording that the token had NO
+owner at registration time and the buyer owning it only afterwards, a
+multi-mint registering in token order, the Adapter being called with
+the ERC-721-standard binding for this contract and token and the
+token's metadata route as the agent URI, registration running on
+every mint path (whitelist, reserve, and SeaDrop included), the
+identity NFT custodied by the Adapter (never in the token's wallet,
+never in the collection contract), a repeat registration reverting
+without a second Adapter call, a mint with no Adapter configured
+behaving exactly as a plain mint with no registration, and the
+`registerAgent` fallback for such a token — refusing to run before
+the Adapter is set (owner-only setter, owner-only fallback), the
+Adapter rejecting the fallback call until the token's owner grants
+the contract the manage delegation, and the fallback then registering
+with the token's owner observed at call time;
 `withdraw()` moving all proceeds to pixel's wallet; the owner
 reserve — a specific ID minted free to pixel's wallet while the mint is
 closed (with its ERC-6551 account created), owner-only enforcement, the
@@ -354,7 +403,7 @@ keys reading empty), a stranger's write reverting (including an owner
 of a different token writing someone else's records), the Base
 address key present with exactly the token's ERC-6551 account bytes
 after a direct mint, after a reserve mint, and after a SeaDrop mint,
-and `registerAgent` writing the agent-registration key naming the
+and the mint writing the agent-registration key naming the
 registry (ERC-7930) and the issued agentId with the value `"1"`.
 
 Local-test note: for SeaDrop, a test signer stands in as the allowed
@@ -369,7 +418,12 @@ account implementation is only an input to the derivation in tests.
 For ERC-8004, a mock registry and a mock Adapter (also in `Mocks.sol`)
 stand in for the real pair: the mock Adapter registers into the mock
 registry with itself as the identity's custodian and records its call
-arguments and bindings, mirroring the real Adapter's custody model;
-it records instead of enforcing the real Adapter's caller-authority
-rules, which are a deploy-time operational matter (see the
-caller-authority note above).
+arguments and bindings, mirroring the real Adapter's custody model.
+It also enforces the real Adapter's caller-authority rule in modeled
+form — the token contract is authorized only while the bound token
+has no owner, the token's current owner is authorized, and a caller
+the owner has delegated is authorized, with the delegate.xyz grant
+represented by a test-set mapping — and it records the owner it
+observed at each registration, which is how the suite proves the
+mint registers before it assigns (see the caller-authority note
+above).

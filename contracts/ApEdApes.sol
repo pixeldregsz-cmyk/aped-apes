@@ -101,11 +101,13 @@ interface IERC8048Metadata {
 /// @title ApEdApes
 /// @notice The ApEd collection: 444 agent apes on Base. Each token is an
 ///         ERC-721 with its own ERC-6551 token-bound account (created at
-///         mint) and an optional ERC-8004 agent identity (registered by the
-///         owner after mint, through Adapter8004 — the Adapter custodies
-///         the identity, bound to the token), and carries an ERC-8048 onchain metadata
-///         store holding its ERC-721T agent profile (see the ERC-8048
-///         section below). Design source: BUILD-BOOK.md §1, §2, §7.
+///         mint) and an ERC-8004 agent identity registered through
+///         Adapter8004 INSIDE the mint itself — register first, then
+///         assign to the buyer (Prem's confirmed order, 2026-11-17);
+///         the Adapter custodies the identity, bound to the token — and
+///         carries an ERC-8048 onchain metadata store holding its
+///         ERC-721T agent profile (see the ERC-8048 section below).
+///         Design source: BUILD-BOOK.md §1, §2, §7.
 ///         The public sale's front door is OpenSea via SeaDrop (see the
 ///         SeaDrop section below); the direct mint() keeps this
 ///         contract's own phase/whitelist system for a possible mint
@@ -182,14 +184,16 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     ///         set in the constructor (may be address(0) at deploy and set
     ///         later via setAgentRegistry). The Adapter is configured
     ///         against this registry — the agentIds it returns are
-    ///         registry IDs — and registerAgent names this registry in
+    ///         registry IDs — and registration names this registry in
     ///         the token's ERC-721T agent-registration key. See README.
     address public agentRegistry;
 
     /// @notice Adapter8004 address — the ERC-8004 registration front-end
-    ///         registerAgent calls. DEPLOYMENT PARAMETER: set in the
+    ///         the mint-time registration (and the registerAgent
+    ///         fallback) calls. DEPLOYMENT PARAMETER: set in the
     ///         constructor (may be address(0) at deploy and set later via
-    ///         setAgentAdapter). See README.
+    ///         setAgentAdapter). For identities to be filed at mint it
+    ///         must be set before the mint opens. See README.
     address public agentAdapter;
 
     /// @notice ERC-8004 agentId recorded per tokenId (0 = not registered).
@@ -197,8 +201,9 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
 
     /// @notice ERC-8048 onchain metadata store: tokenId => key => value.
     ///         Populated automatically at mint (the ERC-721T Base address
-    ///         key) and at registerAgent (the agent-registration key), and
-    ///         by hand afterwards via setMetadata. Read with metadata().
+    ///         key, and the agent-registration key when registration
+    ///         runs), and by hand afterwards via setMetadata. Read with
+    ///         metadata().
     mapping(uint256 tokenId => mapping(string key => bytes value)) private _tokenMetadata;
 
     /// @notice Address that receives mint proceeds on withdraw(). Set to
@@ -293,9 +298,47 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
         for (uint256 i = 0; i < quantity; i++) {
             uint256 tokenId = _claimNextPublicId();
             totalMinted++;
-            _safeMint(msg.sender, tokenId);
-            _createTokenAccount(tokenId);
+            _issueToken(msg.sender, tokenId);
         }
+    }
+
+    /// @notice Issue one token: register its ERC-8004 identity first
+    ///         (when the Adapter and registry are configured), then
+    ///         assign the token to its buyer, then create its ERC-6551
+    ///         account. EVERY mint path — direct, whitelist, reserve,
+    ///         SeaDrop — issues through here, so no path can skip the
+    ///         registration. The order is Prem's confirmed design
+    ///         (2026-11-17: "register then assign to the buyer"), and
+    ///         it is the only order the Adapter's caller rules allow
+    ///         this contract: the Adapter authorizes the token
+    ///         contract itself only while the token has no owner (its
+    ///         ownerless-registration path), so registration must run
+    ///         before assignment. With no Adapter configured the
+    ///         registration step is skipped and the mint behaves
+    ///         exactly as a plain mint — configuration order at deploy
+    ///         must never brick the mint; a token minted unregistered
+    ///         can be registered later through the registerAgent
+    ///         fallback (see its note on the delegation that then
+    ///         applies).
+    function _issueToken(address to, uint256 tokenId) internal {
+        if (agentAdapter != address(0) && agentRegistry != address(0)) {
+            _registerWithAdapter(tokenId, _agentURI(tokenId));
+        }
+        _safeMint(to, tokenId);
+        _createTokenAccount(tokenId);
+    }
+
+    /// @notice The agent URI recorded with the Adapter at mint-time
+    ///         registration: the token's own metadata route — the same
+    ///         string tokenURI(tokenId) serves once the token exists
+    ///         ({baseURI}{tokenId}). It is computed directly here
+    ///         because ERC-721's tokenURI() requires an existing token
+    ///         and registration runs before assignment. The metadata
+    ///         service serves the agent's profile at this route (it
+    ///         reads the recorded agentId back from this contract), so
+    ///         the URI is the registration's profile pointer.
+    function _agentURI(uint256 tokenId) internal view returns (string memory) {
+        return string.concat(_baseTokenURI, Strings.toString(tokenId));
     }
 
     /// @notice Owner reserve mint. Designates one specific token ID as
@@ -316,8 +359,7 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
         isReserved[tokenId] = true;
         reserveMinted++;
         totalMinted++;
-        _safeMint(payoutAddress, tokenId);
-        _createTokenAccount(tokenId);
+        _issueToken(payoutAddress, tokenId);
         emit ReserveMinted(tokenId, payoutAddress);
     }
 
@@ -390,8 +432,7 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
             for (uint256 j = 0; j < mintQuantities[i]; j++) {
                 uint256 tokenId = _claimNextPublicId();
                 totalMinted++;
-                _safeMint(mintRecipients[i], tokenId);
-                _createTokenAccount(tokenId);
+                _issueToken(mintRecipients[i], tokenId);
             }
         }
         emit SeaDropMinted(msg.sender, minter, feeRecipient, totalQuantity);
@@ -474,37 +515,50 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     }
 
     // ------------------------------------------------------------------
-    // ERC-8004 agent registration, through Adapter8004 (owner-callable)
+    // ERC-8004 agent registration, through Adapter8004. Registration
+    // normally happens INSIDE the mint (see _issueToken): the Adapter
+    // binds the token under the ERC-721 standard (0) and has the
+    // Identity Registry mint the identity NFT to ITSELF — the Adapter
+    // custodies the identity, and control of the record is re-derived
+    // from the token's current owner on every call. The identity
+    // therefore cannot be transferred out of the ape's wallet or
+    // stripped ahead of a sale — it is not in the wallet at all; it
+    // stays bound to the token, and whoever holds the token controls
+    // it. The ape's ERC-6551 wallet is unchanged: it holds the ape's
+    // trading funds, as before.
     // ------------------------------------------------------------------
 
-    /// @notice Register a token as an ERC-8004 agent, through the
-    ///         Adapter8004 front-end, and record its agentId. The owner
-    ///         calls this after mint, once per token, pointing the
-    ///         registration at the token's agent URI (served by the
-    ///         metadata service). The Adapter binds the token under the
-    ///         ERC-721 standard (0) and has the Identity Registry mint
-    ///         the identity NFT to ITSELF: the Adapter custodies the
-    ///         identity, and control of the record is re-derived from
-    ///         the token's current owner on every call. The identity
-    ///         therefore cannot be transferred out of the ape's wallet
-    ///         or stripped ahead of a sale — it is not in the wallet at
-    ///         all; it stays bound to the token, and whoever holds the
-    ///         token controls it. The ape's ERC-6551 wallet is
-    ///         unchanged: it holds the ape's trading funds, as before.
-    /// @dev Caller authority on the Adapter's side: the Adapter
-    ///      authorizes the caller of its register() under its binding
-    ///      rules — the token contract itself while the token has no
-    ///      owner (the Adapter's ownerless-registration path), otherwise
-    ///      the token's current owner or that owner's delegate.xyz
-    ///      delegate (adapter8004.manage). A post-mint call routed
-    ///      through this contract reaches the Adapter with this contract
-    ///      as the caller, so on the real deployment it needs one of
-    ///      those in place — see the README's registration section.
+    /// @notice Fallback registration for a token that was minted
+    ///         BEFORE the Adapter was configured (so its mint carried
+    ///         no registration). Owner-only, once per token. Tokens
+    ///         minted with the Adapter configured are already
+    ///         registered at mint and revert here as already
+    ///         registered.
+    /// @dev Caller authority on the Adapter's side — the Adapter's
+    ///      rule, not ours: post-mint, the Adapter authorizes a
+    ///      register() caller only if it is the token's current owner
+    ///      or that owner's delegate.xyz delegate
+    ///      (adapter8004.manage). This call reaches the Adapter with
+    ///      THIS CONTRACT as the caller, so on the real deployment it
+    ///      succeeds only when the token's current owner has granted
+    ///      this contract that delegation; without it the Adapter
+    ///      rejects the call and this function reverts with the
+    ///      Adapter's error. That is exactly why registration lives in
+    ///      the mint: at mint time this contract registers on the
+    ///      Adapter's ownerless path, which needs no delegation.
     function registerAgent(uint256 tokenId, string calldata agentURI) external onlyOwner returns (uint256 agentId) {
         require(agentAdapter != address(0), "ApEd: agent adapter not set");
         require(agentRegistry != address(0), "ApEd: agent registry not set");
         require(_ownerOf(tokenId) != address(0), "ApEd: token does not exist");
         require(agentIdOf[tokenId] == 0, "ApEd: agent already registered");
+        agentId = _registerWithAdapter(tokenId, agentURI);
+    }
+
+    /// @notice The one registration path both the mint and the
+    ///         registerAgent fallback run: call the Adapter, record
+    ///         the returned agentId against the token, and write the
+    ///         token's ERC-721T agent-registration record.
+    function _registerWithAdapter(uint256 tokenId, string memory agentURI) internal returns (uint256 agentId) {
         agentId = IAdapter8004(agentAdapter).register(
             ADAPTER_STANDARD_ERC721,
             address(this),
@@ -557,7 +611,8 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     // Each token carries a key/value store on this contract. Two records
     // are written automatically: the token's ERC-6551 account under the
     // Base address key at mint (every path), and its ERC-8004
-    // registration under the agent-registration key at registerAgent.
+    // registration under the agent-registration key at registration —
+    // which is part of the mint itself when the Adapter is configured.
     // The profile's `context` and `endpoint[<type>]` keys are
     // deliberately left unset at mint (gas); they are populated per
     // token afterwards through setMetadata. Per EIP-8048, the profile
