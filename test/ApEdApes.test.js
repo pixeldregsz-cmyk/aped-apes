@@ -36,7 +36,8 @@ describe("ApEdApes", function () {
       1000,
       "ipfs://aped-meta/",
       await mock8004.getAddress(),
-      await mockAdapter.getAddress()
+      await mockAdapter.getAddress(),
+      "" // no agent base URI: the recorded agentURI falls back to the metadata route
     );
     await apes.waitForDeployment();
   });
@@ -193,6 +194,55 @@ describe("ApEdApes", function () {
     expect(binding.tokenId).to.equal(1);
   });
 
+  it("records the agent-route URI at mint when an agent base URI is set at deploy", async function () {
+    // a deployment whose agent base URI names the metadata service's
+    // dedicated agent route: the recorded agentURI points there — a
+    // link the project controls, serving the token's ERC-8004 agent
+    // file (Prem's suggestion, 2026-11-17) — NOT at the tokenURI route
+    const ApEd = await ethers.getContractFactory("ApEdApes");
+    const routed = await ApEd.deploy(
+      PRICE,
+      1000,
+      "https://meta.example/metadata/",
+      await mock8004.getAddress(),
+      await mockAdapter.getAddress(),
+      "https://meta.example/agent/"
+    );
+    await routed.waitForDeployment();
+    expect(await routed.agentBaseURI()).to.equal("https://meta.example/agent/");
+    await routed.setMintOpen(true);
+    await routed.connect(buyer).mint(1, { value: PRICE });
+    expect(await mockAdapter.lastAgentURI()).to.equal("https://meta.example/agent/1");
+    // the tokenURI still serves the metadata route — the two diverge
+    expect(await routed.tokenURI(1)).to.equal("https://meta.example/metadata/1");
+    expect(await mockAdapter.lastAgentURI()).to.not.equal(await routed.tokenURI(1));
+    expect(await routed.agentIdOf(1)).to.equal(1);
+  });
+
+  it("agent base URI is owner-settable after deploy; clearing it restores the metadata-route fallback", async function () {
+    // this deployment (beforeEach) has no agent base URI set
+    expect(await apes.agentBaseURI()).to.equal("");
+    await apes.setMintOpen(true);
+    await apes.connect(buyer).mint(1, { value: PRICE });
+    // fallback branch: the recorded agentURI is the metadata route
+    expect(await mockAdapter.lastAgentURI()).to.equal("ipfs://aped-meta/1");
+    expect(await mockAdapter.lastAgentURI()).to.equal(await apes.tokenURI(1));
+    // only the owner can set the agent base URI
+    await expect(apes.connect(buyer).setAgentBaseURI("https://meta.example/agent/")).to.be
+      .reverted;
+    await expect(apes.setAgentBaseURI("https://meta.example/agent/"))
+      .to.emit(apes, "AgentBaseURISet")
+      .withArgs("https://meta.example/agent/");
+    expect(await apes.agentBaseURI()).to.equal("https://meta.example/agent/");
+    // the next mint records the agent route
+    await apes.connect(buyer).mint(1, { value: PRICE });
+    expect(await mockAdapter.lastAgentURI()).to.equal("https://meta.example/agent/2");
+    // clearing it restores the fallback for later mints
+    await apes.setAgentBaseURI("");
+    await apes.connect(buyer).mint(1, { value: PRICE });
+    expect(await mockAdapter.lastAgentURI()).to.equal("ipfs://aped-meta/3");
+  });
+
   it("the Adapter custodies the ERC-8004 identity — not the ape's wallet, not the contract", async function () {
     await apes.setMintOpen(true);
     await apes.connect(buyer).mint(1, { value: PRICE });
@@ -238,7 +288,8 @@ describe("ApEdApes", function () {
       1000,
       "ipfs://aped-meta/",
       await mock8004.getAddress(),
-      ethers.ZeroAddress
+      ethers.ZeroAddress,
+      ""
     );
     await bare.waitForDeployment();
     const bareAddr = await bare.getAddress();

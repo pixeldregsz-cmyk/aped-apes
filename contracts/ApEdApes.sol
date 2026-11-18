@@ -196,6 +196,21 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     ///         must be set before the mint opens. See README.
     address public agentAdapter;
 
+    /// @notice Base URI of the metadata service's AGENT route — the
+    ///         route serving each token's ERC-8004 agent file. The
+    ///         agentURI recorded with the Adapter at mint-time
+    ///         registration is {agentBaseURI}{tokenId} when this is set:
+    ///         the URI points back at a link the project controls, so
+    ///         the ERC-8004 agent metadata behind it can be updated
+    ///         without touching the chain (Prem's suggestion,
+    ///         2026-11-17). DEPLOYMENT PARAMETER: set in the constructor
+    ///         (may be empty at deploy and set later via
+    ///         setAgentBaseURI). While it is empty, the recorded
+    ///         agentURI falls back to the token's metadata route
+    ///         ({baseURI}{tokenId}) — the pre-agent-route behaviour.
+    ///         See README.
+    string public agentBaseURI;
+
     /// @notice ERC-8004 agentId recorded per tokenId (0 = not registered).
     mapping(uint256 tokenId => uint256 agentId) public agentIdOf;
 
@@ -223,6 +238,7 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     event BaseURISet(string baseURI);
     event AgentRegistrySet(address registry);
     event AgentAdapterSet(address adapter);
+    event AgentBaseURISet(string agentBaseURI);
     /// @notice ERC-4906 metadata-update signal: emitted on every
     ///         ERC-8048 value write (see _setMetadata) so marketplaces
     ///         — OpenSea, per its metadata docs — refresh the token's
@@ -247,6 +263,9 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     //   baseURI_        metadata service base URI (IPFS pointers)
     //   _agentRegistry  ERC-8004 Identity Registry address (may be 0)
     //   _agentAdapter   Adapter8004 address (may be 0)
+    //   _agentBaseURI   metadata service AGENT-route base URI (may be
+    //                   empty — the recorded agentURI then falls back
+    //                   to the token's metadata route)
     // Royalty receiver and payout address are fixed to pixel's wallet.
     // ------------------------------------------------------------------
     constructor(
@@ -254,7 +273,8 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
         uint96 _royaltyBps,
         string memory baseURI_,
         address _agentRegistry,
-        address _agentAdapter
+        address _agentAdapter,
+        string memory _agentBaseURI
     ) ERC721("ApEd", "APED") Ownable(msg.sender) {
         address pixelWallet = 0x4F9883C7331ba59A56360fFa3c332e0Bc09029Fc;
         payoutAddress = pixelWallet;
@@ -262,6 +282,7 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
         _baseTokenURI = baseURI_;
         agentRegistry = _agentRegistry;
         agentAdapter = _agentAdapter;
+        agentBaseURI = _agentBaseURI;
         _setDefaultRoyalty(pixelWallet, _royaltyBps);
         // mintPhase stays Closed: the mint starts CLOSED.
     }
@@ -329,15 +350,24 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     }
 
     /// @notice The agent URI recorded with the Adapter at mint-time
-    ///         registration: the token's own metadata route — the same
-    ///         string tokenURI(tokenId) serves once the token exists
-    ///         ({baseURI}{tokenId}). It is computed directly here
-    ///         because ERC-721's tokenURI() requires an existing token
-    ///         and registration runs before assignment. The metadata
-    ///         service serves the agent's profile at this route (it
-    ///         reads the recorded agentId back from this contract), so
-    ///         the URI is the registration's profile pointer.
+    ///         registration. When the agent base URI is set, it is the
+    ///         metadata service's dedicated AGENT route for the token
+    ///         ({agentBaseURI}{tokenId}) — the route serving the token's
+    ///         ERC-8004 agent file, which mirrors the token's on-chain
+    ///         ERC-721T profile. The URI points back at a link the
+    ///         project controls, so the agent metadata behind it can be
+    ///         updated without touching the chain (Prem's suggestion,
+    ///         2026-11-17). When no agent base URI is set, it falls
+    ///         back to the token's own metadata route — the same string
+    ///         tokenURI(tokenId) serves once the token exists
+    ///         ({baseURI}{tokenId}) — so an unconfigured deploy behaves
+    ///         exactly as before. It is computed directly here because
+    ///         ERC-721's tokenURI() requires an existing token and
+    ///         registration runs before assignment.
     function _agentURI(uint256 tokenId) internal view returns (string memory) {
+        if (bytes(agentBaseURI).length != 0) {
+            return string.concat(agentBaseURI, Strings.toString(tokenId));
+        }
         return string.concat(_baseTokenURI, Strings.toString(tokenId));
     }
 
@@ -723,6 +753,14 @@ contract ApEdApes is ERC721, ERC2981, Ownable, ReentrancyGuard, IERC8048Metadata
     function setAgentAdapter(address adapter) external onlyOwner {
         agentAdapter = adapter;
         emit AgentAdapterSet(adapter);
+    }
+
+    /// @notice Set the agent base URI the mint-time registration records
+    ///         agentURIs under (see agentBaseURI). Setting it empty
+    ///         restores the metadata-route fallback.
+    function setAgentBaseURI(string calldata agentBaseURI_) external onlyOwner {
+        agentBaseURI = agentBaseURI_;
+        emit AgentBaseURISet(agentBaseURI_);
     }
 
     /// @notice Change the ERC-2981 default royalty (receiver + rate).

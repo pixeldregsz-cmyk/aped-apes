@@ -34,10 +34,19 @@ chain. Deployment happens only on pixel's explicit word.**
   and only then assigns the token to its buyer and creates its
   ERC-6551 account. The order is **Prem's confirmed design
   (2026-11-17, reviewing this contract: "register then assign to the
-  buyer")**. The agent URI recorded at mint is the token's own
-  metadata route (`{baseURI}{tokenId}` — the same string `tokenURI`
-  serves; the metadata service serves the agent's profile there and
-  reads the recorded agentId back from this contract). The Adapter
+  buyer")**. The agent URI recorded at mint points at the metadata
+  service's dedicated **agent route** (`{agentBaseURI}{tokenId}`) —
+  the route serving the token's ERC-8004 agent file, which mirrors
+  the token's on-chain ERC-721T profile (endpoints included). The
+  URI points back at a link the project controls, so the ERC-8004
+  agent metadata behind it can be updated without touching the
+  chain (**Prem's suggestion, 2026-11-17**, reviewing this
+  contract). The agent base URI is an owner-settable deployment
+  parameter (constructor or `setAgentBaseURI`); while it is unset,
+  the recorded agent URI falls back to the token's own metadata
+  route (`{baseURI}{tokenId}` — the same string `tokenURI`
+  serves), so an unconfigured deploy behaves exactly as before.
+  The Adapter
   binds the token under its ERC-721 standard (standard 0 — control
   follows `ownerOf`) and has the Identity Registry mint the identity
   NFT to the Adapter itself, which custodies it. Control of the
@@ -288,6 +297,7 @@ gas limit, not a contract limit.)
 | **Royalty bps** | The ERC-2981 royalty rate in basis points (e.g. 1000 = 10%). Paid to pixel's wallet `0x4f9883c7331ba59a56360ffa3c332e0bc09029fc` on every secondary sale. | **DECIDED — 1500 bps (15%), set by pixel 2026-11-17.** Pass 1500 as `_royaltyBps` at deploy. The tests use 1000 bps as a placeholder only. |
 | **Mint price (wei)** | The $7 mint price converted to ETH. The contract takes wei, not dollars — no exchange rate is hardcoded anywhere. | Pixel sets the ETH figure at deploy time, from the ETH price that day. Owner can re-price later with `setMintPrice`. |
 | **Base URI** | The metadata service's per-token route. `tokenURI(id)` is `{baseURI}{id}`, and the base URI is set to the deployed metadata service's metadata route — `https://<metadata-service-deployment>/metadata/` — so each token's URI is the service's per-token route for that ID. The JSON served there carries the token's portrait as a per-token `ipfs://<CID>` pointer (the filename→CID mapping is `~/workspace/mutant-fleet/out/image-cids.json`, bound into the service; see the "CID binding" section of the metadata service README). | Set at deploy, once the metadata service is deployed; owner can change it later with `setBaseURI`. |
+| **Agent base URI** | The metadata service's AGENT-route base — `https://<metadata-service-deployment>/agent/`. The agentURI recorded with the Adapter at mint-time registration is `{agentBaseURI}{tokenId}`: the route serving the token's ERC-8004 agent file (which mirrors the token's ERC-721T profile), on a link the project controls so the agent metadata can be updated without touching the chain (Prem's suggestion, 2026-11-17). | Constructor parameter `_agentBaseURI`. May be deployed empty — the recorded agentURI then falls back to the token's metadata route (`{baseURI}{tokenId}`) — and set later with `setAgentBaseURI`. For agentURIs to point at the agent file from the first mint, set it before the mint opens. |
 | **ERC-8004 registry address** | The ERC-8004 Identity Registry on Base. The Adapter is configured against this registry — its registrations return registry agentIds — and registration names it in the token's ERC-721T agent-registration key. Like the Adapter, it must be set before the mint opens for identities to be filed at mint. | Constructor parameter `_agentRegistry`. Researched candidate: `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` — **re-verify before deploy**. May be deployed as `address(0)` and set later with `setAgentRegistry`. |
 | **Adapter8004 address** | The Adapter proxy the mint-time registration calls to register identities — the custody + binding layer for the identity leg (see the registration bullet above). **It must be set before the mint opens if identities are to be filed at mint** (constructor, or `setAgentAdapter` before opening); tokens minted before it is set carry no registration and fall back to `registerAgent` + the owner's delegate.xyz grant. | Constructor parameter `_agentAdapter`; owner can set or change it later with `setAgentAdapter`. Researched Base address: `0x270d25D2c59A8bcA1B0f40ad95fF7806c0025c27` — **re-verify before deploy** against Unruggable's published deployments table, and confirm the implementation version it fronts. |
 
@@ -313,7 +323,10 @@ pixel's wallet `0x4f9883c7331ba59a56360ffa3c332e0bc09029fc`.
    reads true (ERC-4906 signalling is live).
 6. **Set the Adapter and the registry before any mint opens** (constructor
    parameters at step 3, or `setAgentAdapter` / `setAgentRegistry`
-   afterwards) — registration rides inside the mint, in Prem's confirmed
+   afterwards), **and the agent base URI** (constructor parameter
+   `_agentBaseURI`, or `setAgentBaseURI` afterwards) so the agentURI
+   recorded at mint points at the metadata service's agent route from
+   the first mint — registration rides inside the mint, in Prem's confirmed
    order (register, then assign to the buyer), so an ape minted before
    the Adapter is set is an ape with no identity filed. Such a token can
    still be registered later through the `registerAgent` fallback, but
@@ -348,7 +361,7 @@ npm install
 npx hardhat test
 ```
 
-41 tests, all passing. They cover: mint closed by default and rejecting
+43 tests, all passing. They cover: mint closed by default and rejecting
 mints; owner-only mint toggle; exact-price charging (underpay and
 wrong-quantity payment revert); owner re-pricing; the 444 cap (444 mint
 fine, 445th reverts); ERC-6551 account creation at mint with the address
@@ -360,8 +373,12 @@ time the mint lands, the mock Adapter (which enforces the real
 Adapter's caller-authority rule) recording that the token had NO
 owner at registration time and the buyer owning it only afterwards, a
 multi-mint registering in token order, the Adapter being called with
-the ERC-721-standard binding for this contract and token and the
-token's metadata route as the agent URI, registration running on
+the ERC-721-standard binding for this contract and token, the agent
+URI recorded at mint — the token's metadata route when no agent base
+URI is set (the fallback), and the metadata service's agent route
+when one is set, whether at deploy or later through the owner-only
+setter (clearing it restores the fallback, and `tokenURI` is
+unaffected either way) — registration running on
 every mint path (whitelist, reserve, and SeaDrop included), the
 identity NFT custodied by the Adapter (never in the token's wallet,
 never in the collection contract), a repeat registration reverting
