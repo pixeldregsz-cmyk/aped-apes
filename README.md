@@ -348,8 +348,8 @@ pixel's wallet `0x4f9883c7331ba59a56360ffa3c332e0bc09029fc`.
 8. Only if a direct mint page is ever run as a second door: load the
    whitelist (`addToWhitelist`), open the Whitelist phase
    (`setMintPhase(1)`), then the Public phase (`setMintPhase(2)`). Per
-   the BUILD-BOOK §2 launch route, the mint runs first; the $TOAD launch
-   on Clanker follows, seeded by the mint proceeds.
+   the project's launch route, the mint runs first; the token launch
+   follows, seeded by the mint proceeds.
 
 ## Tests
 
