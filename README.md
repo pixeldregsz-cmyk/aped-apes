@@ -4,8 +4,10 @@
 agent apes on Base, built on the same chassis as the live SwampAgentsV2
 (ERC-721 + ERC-6551 + ERC-8004). Design source: `../BUILD-BOOK.md` §1, §2, §7.
 
-**Status: written and tested locally. NOT deployed. Nothing has touched any
-chain. Deployment happens only on pixel's explicit word.**
+**Status: DEPLOYED to Base mainnet 2026-11-18.
+Contract: `0x916A50f2d7374d56C3964eFb706F10909fFeEF01`. Owner: the
+project wallet. Mint phase: Closed — the mint opens only when the
+project sets a date and opens a phase.**
 
 ## What the contract does
 
