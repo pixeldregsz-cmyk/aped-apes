@@ -1,6 +1,15 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
+// Error-handling discipline for this suite: test bodies and hooks let
+// rejected promises propagate to Mocha on purpose — a rejection IS a failed
+// test, and catching it locally could turn a real failure green. What must
+// never slip by is a detached rejection (a promise nobody awaited): make it
+// fail the whole run loudly instead of passing as a warning.
+process.on("unhandledRejection", (err) => {
+  throw err;
+});
+
 const PIXEL_WALLET = ethers.getAddress("0x4f9883c7331ba59a56360ffa3c332e0bc09029fc");
 const CANONICAL_6551_REGISTRY = "0x000000006551c19487814612e58FE06813775758";
 const PRICE = ethers.parseEther("0.002"); // test-only price; the real ETH figure is pixel's deploy call
